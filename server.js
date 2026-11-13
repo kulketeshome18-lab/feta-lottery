@@ -1,9 +1,10 @@
- // ፈታ — ሰርቨር (Firebase Spark እቅድ ላይ ይሰራል፤ Cloud Functions አያስፈልግም)
+// ፈታ — ሰርቨር (Firebase Spark እቅድ ላይ ይሰራል፤ Cloud Functions አያስፈልግም)
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const { FieldValue } = require('firebase-admin/firestore');
+
 // Firebase Service Account በጥንቃቄ ማስጀመር
 let serviceAccount;
 try {
@@ -20,16 +21,19 @@ try {
   console.error('ስህተት: FIREBASE_SERVICE_ACCOUNT ትክክለኛ JSON አይደለም:', err.message);
   process.exit(1);
 }
+
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 const app = express();
 app.use(cors({ origin: true }));
 app.use(express.json());
+
 const CHAPA = 'https://api.chapa.co/v1';
 const chapaKey = () => process.env.CHAPA_SECRET_KEY || '';
 const PUBLIC_MAX_PER_ORDER = 10, PUBLIC_MAX_PER_HOUR = 5;
 
 class HttpErr extends Error { constructor(code, msg){ super(msg); this.code = code; } }
+
 // ---------- Chapa ----------
 async function chapaInit({ txRef, amount, first, last, phone, description }){
   if (!phone) throw new HttpErr(400, 'የስልክ ቁጥር ያስፈልጋል');
@@ -44,18 +48,20 @@ async function chapaInit({ txRef, amount, first, last, phone, description }){
     body: form,
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok  j.status !== 'success') throw new HttpErr(502, j.message  ('Chapa charge failed ' + r.status));
+  if (!r.ok || j.status !== 'success') throw new HttpErr(502, j.message || ('Chapa charge failed ' + r.status));
   return { checkoutUrl: null,
     message: 'ስልክዎ ላይ የክፍያ ማረጋገጫ ተልኳል። PIN አስገብተው ያረጋግጡ።' };
 }
+
 async function chapaVerify(txRef){
-  const r = await fetch(${CHAPA}/transaction/verify/${encodeURIComponent(txRef)}, {
+  const r = await fetch(`${CHAPA}/transaction/verify/${encodeURIComponent(txRef)}`, {
     headers: { 'Authorization': 'Bearer ' + chapaKey() }
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.data) throw new Error('Chapa verify failed');
   return j.data;
 }
+
 // ---------- ማረጋገጫ ----------
 async function verifyUser(req){
   const h = req.get('Authorization') || '';
@@ -64,29 +70,33 @@ async function verifyUser(req){
   const decoded = await admin.auth().verifyIdToken(token).catch(() => { throw new HttpErr(401, 'ልክ ያልሆነ መግቢያ'); });
   return decoded.uid;
 }
+
 async function agentOf(uid){
-  const u = (await db.doc(users/${uid}).get()).data();
-  if (!u  u.role !== 'agent'  u.active !== true) throw new HttpErr(403, 'ኤጀንቶች ብቻ');
+  const u = (await db.doc(`users/${uid}`).get()).data();
+  if (!u || u.role !== 'agent' || u.active !== true) throw new HttpErr(403, 'ኤጀንቶች ብቻ');
   return u;
 }
+
 // ---------- ሽያጭ ----------
 async function saleInput(nums, owner, phone, address, agentId){
   const raw = Array.isArray(nums) ? nums : [];
   const list = [...new Set(raw.map(Number))].filter(n => Number.isInteger(n) && n >= 1);
-  if (!list.length  list.length > 50  list.length !== raw.length) throw new HttpErr(400, 'ትክክለኛ ቁጥሮች');
-  owner = String(owner  '').trim(); phone = String(phone  '').replace(/\s+/g, ''); address = String(address || '').trim();
-  if (!owner  !phone  !address) throw new HttpErr(400, 'የገዢ መረጃ ሙሉ ያስገቡ');
+  if (!list.length || list.length > 50 || list.length !== raw.length) throw new HttpErr(400, 'ትክክለኛ ቁጥሮች');
+  owner = String(owner || '').trim(); phone = String(phone || '').replace(/\s+/g, ''); address = String(address || '').trim();
+  if (!owner || !phone || !address) throw new HttpErr(400, 'የገዢ መረጃ ሙሉ ያስገቡ');
   const st = (await db.doc('config/settings').get()).data() || {};
-  const total = Number(st.total)  0, price = Number(st.price)  0, round = Number(st.round) || 1;
+  const total = Number(st.total) || 0, price = Number(st.price) || 0, round = Number(st.round) || 1;
   if (!price) throw new HttpErr(412, 'ዋጋ አልተዘጋጀም');
   if (list.some(n => n > total)) throw new HttpErr(400, 'ቁጥር ከጠቅላላው ይበልጣል');
-  const taken = new Set(((await db.doc('meta/sold').get()).data()  {}).nums  []);
+  const taken = new Set(((await db.doc('meta/sold').get()).data() || {}).nums || []);
   if (list.some(n => taken.has(n))) throw new HttpErr(409, 'አንዳንድ ቁጥሮች ተሽጠዋል');
   return { nums: list, owner, phone, address, price, round, amount: list.length * price, agentId };
 }
+
 const ticketName = (n, round) => 'FETA-' + String(n).padStart(4, '0') + '-R' + round;
-[11/13/2026 4:08 PM] Kulke️: async function completeSale(saleId, amount, ref){
-  const sref = db.doc(sales/${saleId});
+
+async function completeSale(saleId, amount, ref){
+  const sref = db.doc(`sales/${saleId}`);
   await db.runTransaction(async (tx) => {
     const s = (await tx.get(sref)).data();
     if (!s) throw new Error('sale not found');
@@ -95,8 +105,8 @@ const ticketName = (n, round) => 'FETA-' + String(n).padStart(4, '0') + '-R' + r
     const metaRef = db.doc('meta/sold');
     const names = s.nums.map(n => ticketName(n, s.round));
     const res = await Promise.all([tx.get(metaRef), ...names.map(nm => tx.get(db.doc('tickets/' + nm)))]);
-    const taken = new Set((res[0].data()  {}).nums  []);
-    if (res.slice(1).some(r => r.exists)  s.nums.some(n => taken.has(n))) { tx.update(sref, { status: 'conflict', chapaRef: ref  null }); return; }
+    const taken = new Set((res[0].data() || {}).nums || []);
+    if (res.slice(1).some(r => r.exists) || s.nums.some(n => taken.has(n))) { tx.update(sref, { status: 'conflict', chapaRef: ref || null }); return; }
     const now = Date.now();
     s.nums.forEach((n, i) => tx.set(db.doc('tickets/' + names[i]), {
       number: names[i], n, agentId: s.agentId, agentName: s.agentName, owner: s.owner, phone: s.phone,
@@ -106,22 +116,25 @@ const ticketName = (n, round) => 'FETA-' + String(n).padStart(4, '0') + '-R' + r
     tx.update(sref, { status: 'paid', chapaRef: ref || null, paidAt: FieldValue.serverTimestamp() });
   });
 }
+
 // ---------- Endpoints ----------
-const body = (req) => (req.body && req.body.data)  req.body  {};
+const body = (req) => (req.body && req.body.data) || req.body || {};
 const wrap = (fn) => async (req, res) => {
   try { res.status(200).json({ result: await fn(req, res) }); }
-  catch (e) { res.status(e.code  500).json({ error: { message: e.message  'ስህተት' } }); }
+  catch (e) { res.status(e.code || 500).json({ error: { message: e.message || 'ስህተት' } }); }
 };
+
 app.get('/publicSaleInfo', async (req, res) => {
   try {
     const st = (await db.doc('config/settings').get()).data() || {};
     const meta = (await db.doc('meta/sold').get()).data() || {};
-    res.json({ price: Number(st.price)  0, total: Number(st.total)  0, round: Number(st.round) || 1,
+    res.json({ price: Number(st.price) || 0, total: Number(st.total) || 0, round: Number(st.round) || 1,
       taken: meta.nums || [], maxPerOrder: PUBLIC_MAX_PER_ORDER });
   } catch (e) {
     res.status(500).json({ error: e.message || 'ስህተት' });
   }
 });
+
 app.post('/createChapaSale', wrap(async (req) => {
   const uid = await verifyUser(req); const u = await agentOf(uid);
   const b = body(req);
@@ -133,19 +146,21 @@ app.post('/createChapaSale', wrap(async (req) => {
   const pay = await chapaInit({ txRef: 'SALE-' + sref.id, amount: x.amount, first: x.owner, phone: x.phone, description: desc });
   return { saleId: sref.id, checkoutUrl: pay.checkoutUrl, message: pay.message };
 }));
+
 app.post('/createChapaDeposit', wrap(async (req) => {
   const uid = await verifyUser(req); const u = await agentOf(uid);
   const amount = Math.floor(Number(body(req).amount));
   const st = (await db.doc('config/settings').get()).data() || {};
   const min = (Number(st.price) || 0) * 10;
-  if (!Number.isFinite(amount)  amount < min  amount > 1000000) throw new HttpErr(400, 'መጠኑ ትክክል አይደለም');
+  if (!Number.isFinite(amount) || amount < min || amount > 1000000) throw new HttpErr(400, 'መጠኑ ትክክል አይደለም');
   const ref = db.collection('deposits').doc();
   await ref.set({ agentId: uid, agentName: u.name, amount, method: 'chapa', status: 'pending', createdMs: Date.now() });
   const pay = await chapaInit({ txRef: 'DEP-' + ref.id, amount, phone: u.phone, description: 'ዲፖዚት: ' + amount + ' ብር' });
   return { depositId: ref.id, checkoutUrl: pay.checkoutUrl, message: pay.message };
 }));
+
 app.post('/createPublicChapaSale', async (req, res) => {
-[11/13/2026 4:08 PM] Kulke️: try {
+  try {
     const b = body(req);
     const phone = String(b.phone || '').replace(/\s+/g, '');
     if (!/^(09|07)\d{8}$/.test(phone)) throw new HttpErr(400, 'ትክክለኛ ስልክ ቁጥር ያስገቡ (09xxxxxxxx)');
@@ -163,12 +178,12 @@ app.post('/createPublicChapaSale', async (req, res) => {
     const desc = 'የጨዋታ ቁጥር: ' + x.nums.map(n => ticketName(n, x.round)).join(', ') + ' | ' + x.amount + ' ብር';
     const pay = await chapaInit({ txRef: 'SALE-' + sref.id, amount: x.amount, first: x.owner, phone, description: desc });
     res.json({ saleId: sref.id, checkoutUrl: pay.checkoutUrl, message: pay.message });
-  } catch (e) { res.status(e.code  500).send(e.message  'ስህተት'); }
+  } catch (e) { res.status(e.code || 500).send(e.message || 'ስህተት'); }
 });
 
 app.post('/chapaCallback', async (req, res) => {
   try {
-    const txRef = String((req.body && (req.body.trx_ref  req.body.tx_ref))  '');
+    const txRef = String((req.body && (req.body.trx_ref || req.body.tx_ref)) || '');
     if (!txRef) return res.status(400).send('no tx_ref');
     let v;
     try { v = await chapaVerify(txRef); } catch (e) { return res.status(502).send('verify failed'); }
@@ -176,12 +191,12 @@ app.post('/chapaCallback', async (req, res) => {
     const amount = Number(v.amount);
     if (txRef.startsWith('SALE-')) { await completeSale(txRef.slice(5), amount, v.reference || txRef); return res.send('ok'); }
     if (txRef.startsWith('DEP-')) {
-      const dref = db.doc(deposits/${txRef.slice(4)});
+      const dref = db.doc(`deposits/${txRef.slice(4)}`);
       await db.runTransaction(async (tx) => {
         const d = (await tx.get(dref)).data();
         if (!d || d.status === 'approved') return;
         if (amount !== d.amount) { tx.update(dref, { status: 'mismatch', chapaRef: v.reference || null }); return; }
-        tx.update(db.doc(users/${d.agentId}), { balance: FieldValue.increment(d.amount) });
+        tx.update(db.doc(`users/${d.agentId}`), { balance: FieldValue.increment(d.amount) });
         tx.update(dref, { status: 'approved', approvedBy: 'chapa', chapaRef: v.reference || null, approvedAt: FieldValue.serverTimestamp() });
       });
       return res.send('ok');
@@ -192,6 +207,7 @@ app.post('/chapaCallback', async (req, res) => {
     res.status(500).send('internal error');
   }
 });
+
 app.get('/', (req, res) => res.send('FETA server OK'));
 app.get('/buy', (req, res) => res.sendFile(path.join(__dirname, 'public', 'buy.html')));
 
